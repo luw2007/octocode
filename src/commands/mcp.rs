@@ -25,8 +25,8 @@ pub struct McpArgs {
 	pub debug: bool,
 
 	/// Path to the directory to serve (defaults to current directory)
-	#[arg(long, default_value = ".")]
-	pub path: String,
+	#[arg(long)]
+	pub path: Option<String>,
 
 	/// Skip git repository requirement and git-based optimizations
 	#[arg(long)]
@@ -44,15 +44,32 @@ pub struct McpArgs {
 pub async fn run(args: McpArgs) -> Result<()> {
 	let config = Config::load()?;
 
-	// Convert path to absolute PathBuf
-	let working_directory = std::path::Path::new(&args.path)
-		.canonicalize()
-		.map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", args.path, e))?;
+	// Use specified path or current directory
+	let working_directory = if let Some(ref path_str) = args.path {
+		std::path::Path::new(path_str)
+			.canonicalize()
+			.map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", path_str, e))?
+	} else {
+		std::env::current_dir()
+			.map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?
+	};
 
 	// Verify the path exists and is a directory
 	if !working_directory.is_dir() {
 		return Err(anyhow::anyhow!(
 			"Path '{}' is not a directory",
+			working_directory.display()
+		));
+	}
+
+	// Verify git repository requirement (unless --no-git is specified)
+	if !args.no_git && !working_directory.join(".git").exists() {
+		return Err(anyhow::anyhow!(
+			"Not a git repository: {}\n\n\
+			 Hint: Either navigate to a git repository, or use --no-git to skip this check.\n\
+			 Example:\n  \
+			   cd /path/to/your/git/repo && octocode mcp\n  \
+			   or: octocode mcp --no-git",
 			working_directory.display()
 		));
 	}

@@ -11,15 +11,20 @@ Octocode provides a built-in MCP server that enables AI assistants to interact w
 ### Basic MCP Server
 
 ```bash
-# Start MCP server for current project
-octocode mcp --path .
+# Start MCP server for current directory (auto-detected)
+octocode mcp
 
 # Start for specific project
 octocode mcp --path /path/to/your/project
 
+# Start in non-git directory
+octocode mcp --no-git
+
 # Start with debug logging
-octocode mcp --path . --debug
+octocode mcp --debug
 ```
+
+**Note**: By default, `octocode mcp` requires the directory to be a git repository. Use `--no-git` to skip this check.
 
 ### HTTP Mode
 
@@ -33,12 +38,28 @@ octocode mcp --bind "0.0.0.0:8080" --path /path/to/project
 
 ## Claude Desktop Integration
 
-### Configuration
+### Best Practice: Use `cwd` Parameter
 
-Add to your Claude Desktop configuration file:
+Claude Desktop allows you to specify the working directory using the `cwd` parameter. This is the recommended approach as it's cleaner and more maintainable:
 
 **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows**: `%APPDATA%\\Claude\\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "octocode": {
+      "command": "octocode",
+      "args": ["mcp"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
+```
+
+### Alternative: Explicit Path
+
+You can also use the `--path` argument:
 
 ```json
 {
@@ -53,24 +74,35 @@ Add to your Claude Desktop configuration file:
 
 ### Multiple Projects
 
+Each project runs in its own MCP server instance with complete isolation:
+
 ```json
 {
   "mcpServers": {
     "octocode-rust": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/rust/project", "--port", "3001"]
+      "args": ["mcp"],
+      "cwd": "/path/to/rust/project"
     },
     "octocode-python": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/python/project", "--port", "3002"]
+      "args": ["mcp"],
+      "cwd": "/path/to/python/project"
     },
     "octocode-typescript": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/ts/project", "--port", "3003"]
+      "args": ["mcp"],
+      "cwd": "/path/to/typescript/project"
     }
   }
 }
 ```
+
+**Benefits of separate instances:**
+- ✅ Complete process isolation (no CWD race conditions)
+- ✅ Independent caching per project
+- ✅ Better resource management
+- ✅ Simpler configuration
 
 ### With LSP Integration
 
@@ -79,15 +111,18 @@ Add to your Claude Desktop configuration file:
   "mcpServers": {
     "octocode-rust": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/rust/project", "--with-lsp", "rust-analyzer"]
+      "args": ["mcp", "--with-lsp", "rust-analyzer"],
+      "cwd": "/path/to/rust/project"
     },
     "octocode-python": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/python/project", "--with-lsp", "pylsp"]
+      "args": ["mcp", "--with-lsp", "pylsp"],
+      "cwd": "/path/to/python/project"
     },
     "octocode-typescript": {
       "command": "octocode",
-      "args": ["mcp", "--path", "/path/to/ts/project", "--with-lsp", "typescript-language-server --stdio"]
+      "args": ["mcp", "--with-lsp", "typescript-language-server --stdio"],
+      "cwd": "/path/to/typescript/project"
     }
   }
 }

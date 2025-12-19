@@ -48,7 +48,7 @@ impl BM25Index {
         let index = Index::open_or_create(tantivy::directory::MmapDirectory::open(&bm25_path)?, schema.clone())?;
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
 
         Ok(Self {
