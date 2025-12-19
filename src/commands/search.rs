@@ -75,8 +75,8 @@ pub struct SearchArgs {
 	#[arg(short, long, default_value = "all")]
 	pub mode: String,
 
-	/// Output format: 'cli', 'json', 'md', or 'text'
-	#[arg(short, long, default_value = "cli")]
+	/// Output format: 'compact' (default), 'cli', 'json', 'md', or 'text'
+	#[arg(short, long, default_value = "compact")]
 	pub format: OutputFormat,
 
 	/// Similarity threshold (0.0-1.0). Higher values = more similar results only. Defaults to config.search.similarity_threshold
@@ -220,6 +220,9 @@ pub async fn execute(
 			} else if args.format.is_md() {
 				let markdown = indexer::code_blocks_to_markdown_with_config(&code_blocks, config);
 				println!("{}", markdown);
+			} else if args.format.is_compact() {
+				// Compact format for narrow terminals
+				indexer::render_code_blocks_compact(&code_blocks);
 			} else if args.format.is_text() {
 				// Use text formatting function for token efficiency
 				let text_output = indexer::search::format_code_search_results_as_text(
@@ -352,6 +355,13 @@ pub async fn execute(
 					effective_detail_level,
 				);
 				println!("{}", text_output);
+			} else if args.format.is_compact() {
+				// Compact format for all results (only show code blocks for simplicity)
+				if !final_code_results.is_empty() {
+					indexer::render_code_blocks_compact(&final_code_results);
+				} else {
+					println!("No results found.");
+				}
 			} else {
 				if !doc_blocks.is_empty() {
 					println!("=== DOCUMENTATION RESULTS ===\n");
@@ -439,12 +449,12 @@ fn render_text_blocks_with_config(
 					if lines.len() <= 10 {
 						// Show all lines if content is short
 						for (i, line) in lines.iter().enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 					} else {
 						// Smart truncation: first 4 lines
 						for (i, line) in lines.iter().take(4).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 
 						// Show separator with count
@@ -456,7 +466,7 @@ fn render_text_blocks_with_config(
 						// Last 3 lines
 						let last_3_start = lines.len() - 3;
 						for (i, line) in lines.iter().skip(last_3_start).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + last_3_start + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + last_3_start + i, line);
 						}
 					}
 				}
@@ -464,7 +474,7 @@ fn render_text_blocks_with_config(
 					// Show full content with line numbers
 					let lines: Vec<&str> = block.content.lines().collect();
 					for (i, line) in lines.iter().enumerate() {
-						println!("║ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ {:4} │ {}", block.start_line + i, line);
 					}
 				}
 				_ => {
@@ -472,12 +482,12 @@ fn render_text_blocks_with_config(
 					let lines: Vec<&str> = block.content.lines().collect();
 					if lines.len() <= 10 {
 						for (i, line) in lines.iter().enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 					} else {
 						// Smart truncation: first 4 lines
 						for (i, line) in lines.iter().take(4).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 
 						let omitted_lines = lines.len() - 7;
@@ -488,7 +498,7 @@ fn render_text_blocks_with_config(
 						// Last 3 lines
 						let last_3_start = lines.len() - 3;
 						for (i, line) in lines.iter().skip(last_3_start).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + last_3_start + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + last_3_start + i, line);
 						}
 					}
 				}
@@ -568,12 +578,12 @@ fn render_document_blocks_with_config(
 					if lines.len() <= 10 {
 						// Show all lines if content is short
 						for (i, line) in lines.iter().enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 					} else {
 						// Smart truncation: first 4 lines
 						for (i, line) in lines.iter().take(4).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 
 						// Show separator with count
@@ -585,7 +595,7 @@ fn render_document_blocks_with_config(
 						// Last 3 lines
 						let last_3_start = lines.len() - 3;
 						for (i, line) in lines.iter().skip(last_3_start).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + last_3_start + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + last_3_start + i, line);
 						}
 					}
 				}
@@ -596,7 +606,7 @@ fn render_document_blocks_with_config(
 					}
 					let lines: Vec<&str> = block.content.lines().collect();
 					for (i, line) in lines.iter().enumerate() {
-						println!("║ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ {:4} │ {}", block.start_line + i, line);
 					}
 				}
 				_ => {
@@ -607,12 +617,12 @@ fn render_document_blocks_with_config(
 					let lines: Vec<&str> = block.content.lines().collect();
 					if lines.len() <= 10 {
 						for (i, line) in lines.iter().enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 					} else {
 						// Smart truncation: first 4 lines
 						for (i, line) in lines.iter().take(4).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + i, line);
 						}
 
 						let omitted_lines = lines.len() - 7;
@@ -623,7 +633,7 @@ fn render_document_blocks_with_config(
 						// Last 3 lines
 						let last_3_start = lines.len() - 3;
 						for (i, line) in lines.iter().skip(last_3_start).enumerate() {
-							println!("║ {:4} │ {}", block.start_line + last_3_start + i + 1, line);
+							println!("║ {:4} │ {}", block.start_line + last_3_start + i, line);
 						}
 					}
 				}

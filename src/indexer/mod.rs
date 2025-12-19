@@ -21,6 +21,7 @@ pub mod differential_processor; // Differential processing utilities for increme
 pub mod file_processor; // File processing utilities for text and markdown files
 pub mod graph_optimization;
 pub mod graphrag; // GraphRAG generation for code relationships (modular implementation)
+pub mod hybrid_search; // Hybrid search with BM25 + Vector + RRF fusion
 pub mod languages; // Language-specific processors
 pub mod markdown_processor; // Markdown document processing utilities
 pub mod search; // Search functionality // Task-focused graph extraction and optimization

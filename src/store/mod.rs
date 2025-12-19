@@ -35,6 +35,7 @@ use self::{
 };
 
 pub mod batch_converter;
+pub mod bm25;
 pub mod debug;
 pub mod graphrag;
 pub mod metadata;
@@ -87,6 +88,7 @@ pub struct Store {
 	db: Connection,
 	code_vector_dim: usize, // Size of code embedding vectors
 	text_vector_dim: usize, // Size of text embedding vectors
+	bm25_index: Arc<tokio::sync::Mutex<bm25::BM25Index>>, // BM25 full-text search index
 }
 
 // Implementing Drop for the Store
@@ -181,10 +183,15 @@ impl Store {
 			}
 		}
 
+		// Initialize BM25 index
+		let bm25_index = bm25::BM25Index::new(&index_path)?;
+		let bm25_index = Arc::new(tokio::sync::Mutex::new(bm25_index));
+
 		Ok(Self {
 			db,
 			code_vector_dim,
 			text_vector_dim,
+			bm25_index,
 		})
 	}
 
@@ -300,6 +307,19 @@ impl Store {
 		let table_ops = TableOperations::new(&self.db);
 		table_ops.store_batch("code_blocks", batch).await?;
 
+		// Sync to BM25 index
+		let mut bm25_guard = self.bm25_index.lock().await;
+		for block in blocks {
+			bm25_guard.add_code_block(
+				&block.content,
+				&block.path,
+				&block.symbols,
+				&block.hash,
+			)?;
+		}
+		bm25_guard.commit()?;
+		drop(bm25_guard);
+
 		// Create or optimize vector index based on dataset growth
 		if let Ok(table) = self.db.open_table("code_blocks").execute().await {
 			let row_count = table.count_rows(None).await?;
@@ -350,6 +370,18 @@ impl Store {
 		let table_ops = TableOperations::new(&self.db);
 		table_ops.store_batch("text_blocks", batch).await?;
 
+		// Sync to BM25 index
+		let mut bm25_guard = self.bm25_index.lock().await;
+		for block in blocks {
+			bm25_guard.add_text_block(
+				&block.content,
+				&block.path,
+				&block.hash,
+			)?;
+		}
+		bm25_guard.commit()?;
+		drop(bm25_guard);
+
 		// Create or optimize vector index based on dataset growth
 		if let Ok(table) = self.db.open_table("text_blocks").execute().await {
 			let row_count = table.count_rows(None).await?;
@@ -399,6 +431,18 @@ impl Store {
 
 		let table_ops = TableOperations::new(&self.db);
 		table_ops.store_batch("document_blocks", batch).await?;
+
+		// Sync to BM25 index
+		let mut bm25_guard = self.bm25_index.lock().await;
+		for block in blocks {
+			bm25_guard.add_document_block(
+				&block.content,
+				&block.path,
+				&block.hash,
+			)?;
+		}
+		bm25_guard.commit()?;
+		drop(bm25_guard);
 
 		// Create or optimize vector index based on dataset growth
 		if let Ok(table) = self.db.open_table("document_blocks").execute().await {
@@ -682,6 +726,172 @@ impl Store {
 		table_ops.flush_all_tables().await
 	}
 
+	// Hybrid search methods (BM25 + Vector + RRF fusion)
+	pub async fn hybrid_search_code_blocks(
+		&self,
+		query: &str,
+		embedding: Vec<f32>,
+		limit: Option<usize>,
+		distance_threshold: Option<f32>,
+		language_filter: Option<&str>,
+	) -> Result<Vec<CodeBlock>> {
+		use crate::indexer::hybrid_search::{reciprocal_rank_fusion, QueryStrategy};
+
+		let strategy = QueryStrategy::from_query(query);
+		let search_limit = limit.unwrap_or(10) * 3;
+
+		// Execute BM25 search
+		let bm25_guard = self.bm25_index.lock().await;
+		let bm25_results = bm25_guard.search(query, search_limit, Some("code"))?;
+		drop(bm25_guard);
+
+		// Execute vector search
+		let vector_results = self
+			.get_code_blocks_with_language_filter(
+				embedding,
+				Some(search_limit),
+				distance_threshold,
+				language_filter,
+			)
+			.await?;
+
+		// Apply RRF fusion
+		let rrf_results = reciprocal_rank_fusion(&bm25_results, &vector_results, &strategy, 60.0);
+
+		// Create hash -> CodeBlock map from vector results
+		let mut block_map = std::collections::HashMap::new();
+		for block in vector_results {
+			block_map.insert(block.hash.clone(), block);
+		}
+
+		// Reconstruct results in RRF order, fetching BM25-only blocks from LanceDB
+		let mut final_results = Vec::new();
+		for rrf_result in rrf_results.iter().take(limit.unwrap_or(10)) {
+			if let Some(block) = block_map.get(&rrf_result.hash) {
+				// Found in vector results - use directly
+				final_results.push(block.clone());
+			} else {
+				// BM25-only result - fetch from LanceDB by hash
+				if let Ok(block) = self.get_code_block_by_hash(&rrf_result.hash).await {
+					// Apply language filter if specified
+					if let Some(lang) = language_filter {
+						if block.language == lang {
+							final_results.push(block);
+						}
+					} else {
+						final_results.push(block);
+					}
+				}
+			}
+		}
+
+		Ok(final_results)
+	}
+
+	pub async fn hybrid_search_document_blocks(
+		&self,
+		query: &str,
+		embedding: Vec<f32>,
+		limit: Option<usize>,
+		distance_threshold: Option<f32>,
+	) -> Result<Vec<DocumentBlock>> {
+		use crate::indexer::hybrid_search::{reciprocal_rank_fusion_docs, QueryStrategy};
+
+		let strategy = QueryStrategy::from_query(query);
+		let search_limit = limit.unwrap_or(10) * 3;
+
+		// Execute BM25 search
+		let bm25_guard = self.bm25_index.lock().await;
+		let bm25_results = bm25_guard.search(query, search_limit, Some("doc"))?;
+		drop(bm25_guard);
+
+		// Execute vector search
+		let vector_results = self
+			.get_document_blocks_with_config(
+				embedding,
+				Some(search_limit),
+				distance_threshold,
+			)
+			.await?;
+
+		// Apply RRF fusion
+		let rrf_results = reciprocal_rank_fusion_docs(&bm25_results, &vector_results, &strategy, 60.0);
+
+		// Create hash -> DocumentBlock map from vector results
+		let mut block_map = std::collections::HashMap::new();
+		for block in vector_results {
+			block_map.insert(block.hash.clone(), block);
+		}
+
+		// Reconstruct results in RRF order, fetching BM25-only blocks from LanceDB
+		let mut final_results = Vec::new();
+		for rrf_result in rrf_results.iter().take(limit.unwrap_or(10)) {
+			if let Some(block) = block_map.get(&rrf_result.hash) {
+				// Found in vector results - use directly
+				final_results.push(block.clone());
+			} else {
+				// BM25-only result - fetch from LanceDB by hash
+				if let Ok(block) = self.get_document_block_by_hash(&rrf_result.hash).await {
+					final_results.push(block);
+				}
+			}
+		}
+
+		Ok(final_results)
+	}
+
+	pub async fn hybrid_search_text_blocks(
+		&self,
+		query: &str,
+		embedding: Vec<f32>,
+		limit: Option<usize>,
+		distance_threshold: Option<f32>,
+	) -> Result<Vec<TextBlock>> {
+		use crate::indexer::hybrid_search::{reciprocal_rank_fusion_text, QueryStrategy};
+
+		let strategy = QueryStrategy::from_query(query);
+		let search_limit = limit.unwrap_or(10) * 3;
+
+		// Execute BM25 search
+		let bm25_guard = self.bm25_index.lock().await;
+		let bm25_results = bm25_guard.search(query, search_limit, Some("text"))?;
+		drop(bm25_guard);
+
+		// Execute vector search
+		let vector_results = self
+			.get_text_blocks_with_config(
+				embedding,
+				Some(search_limit),
+				distance_threshold,
+			)
+			.await?;
+
+		// Apply RRF fusion
+		let rrf_results = reciprocal_rank_fusion_text(&bm25_results, &vector_results, &strategy, 60.0);
+
+		// Create hash -> TextBlock map from vector results
+		let mut block_map = std::collections::HashMap::new();
+		for block in vector_results {
+			block_map.insert(block.hash.clone(), block);
+		}
+
+		// Reconstruct results in RRF order, fetching BM25-only blocks from LanceDB
+		let mut final_results = Vec::new();
+		for rrf_result in rrf_results.iter().take(limit.unwrap_or(10)) {
+			if let Some(block) = block_map.get(&rrf_result.hash) {
+				// Found in vector results - use directly
+				final_results.push(block.clone());
+			} else {
+				// BM25-only result - fetch from LanceDB by hash
+				if let Ok(block) = self.get_text_block_by_hash(&rrf_result.hash).await {
+					final_results.push(block);
+				}
+			}
+		}
+
+		Ok(final_results)
+	}
+
 	pub async fn close(self) -> Result<()> {
 		// The database connection is closed automatically when the Store is dropped
 		Ok(())
@@ -907,6 +1117,62 @@ impl Store {
 		}
 
 		Err(anyhow::anyhow!("Code block with hash {} not found", hash))
+	}
+
+	pub async fn get_document_block_by_hash(&self, hash: &str) -> Result<DocumentBlock> {
+		let table_ops = TableOperations::new(&self.db);
+		if !table_ops.table_exists("document_blocks").await? {
+			return Err(anyhow::anyhow!("Document blocks table does not exist"));
+		}
+
+		let table = self.db.open_table("document_blocks").execute().await?;
+		let mut results = table
+			.query()
+			.only_if(format!("hash = '{}'", hash))
+			.limit(1)
+			.execute()
+			.await?;
+
+		while let Some(batch) = results.try_next().await? {
+			if batch.num_rows() > 0 {
+				let converter = BatchConverter::new(self.text_vector_dim);
+				let blocks = converter.batch_to_document_blocks(&batch, None)?;
+				return blocks
+					.into_iter()
+					.next()
+					.ok_or_else(|| anyhow::anyhow!("Failed to convert result to DocumentBlock"));
+			}
+		}
+
+		Err(anyhow::anyhow!("Document block with hash {} not found", hash))
+	}
+
+	pub async fn get_text_block_by_hash(&self, hash: &str) -> Result<TextBlock> {
+		let table_ops = TableOperations::new(&self.db);
+		if !table_ops.table_exists("text_blocks").await? {
+			return Err(anyhow::anyhow!("Text blocks table does not exist"));
+		}
+
+		let table = self.db.open_table("text_blocks").execute().await?;
+		let mut results = table
+			.query()
+			.only_if(format!("hash = '{}'", hash))
+			.limit(1)
+			.execute()
+			.await?;
+
+		while let Some(batch) = results.try_next().await? {
+			if batch.num_rows() > 0 {
+				let converter = BatchConverter::new(self.text_vector_dim);
+				let blocks = converter.batch_to_text_blocks(&batch, None)?;
+				return blocks
+					.into_iter()
+					.next()
+					.ok_or_else(|| anyhow::anyhow!("Failed to convert result to TextBlock"));
+			}
+		}
+
+		Err(anyhow::anyhow!("Text block with hash {} not found", hash))
 	}
 
 	pub async fn tables_exist(&self, table_names: &[&str]) -> Result<bool> {

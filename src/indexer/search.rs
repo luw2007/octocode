@@ -84,12 +84,12 @@ pub fn render_code_blocks_with_config(blocks: &[CodeBlock], config: &Config, det
 				if lines.len() <= 10 {
 					// Show all lines if content is short
 					for (i, line) in lines.iter().enumerate() {
-						println!("║ │ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ │ {:4} │ {}", block.start_line + i, line);
 					}
 				} else {
 					// Smart truncation: first 4 lines
 					for (i, line) in lines.iter().take(4).enumerate() {
-						println!("║ │ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ │ {:4} │ {}", block.start_line + i, line);
 					}
 
 					// Show separator with count
@@ -103,7 +103,7 @@ pub fn render_code_blocks_with_config(blocks: &[CodeBlock], config: &Config, det
 					for (i, line) in lines.iter().skip(last_3_start).enumerate() {
 						println!(
 							"║ │ {:4} │ {}",
-							block.start_line + last_3_start + i + 1,
+							block.start_line + last_3_start + i,
 							line
 						);
 					}
@@ -137,12 +137,12 @@ pub fn render_code_blocks_with_config(blocks: &[CodeBlock], config: &Config, det
 				let lines: Vec<&str> = block.content.lines().collect();
 				if lines.len() <= 10 {
 					for (i, line) in lines.iter().enumerate() {
-						println!("║ │ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ │ {:4} │ {}", block.start_line + i, line);
 					}
 				} else {
 					// Smart truncation: first 4 lines
 					for (i, line) in lines.iter().take(4).enumerate() {
-						println!("║ │ {:4} │ {}", block.start_line + i + 1, line);
+						println!("║ │ {:4} │ {}", block.start_line + i, line);
 					}
 
 					let omitted_lines = lines.len() - 7;
@@ -155,7 +155,7 @@ pub fn render_code_blocks_with_config(blocks: &[CodeBlock], config: &Config, det
 					for (i, line) in lines.iter().skip(last_3_start).enumerate() {
 						println!(
 							"║ │ {:4} │ {}",
-							block.start_line + last_3_start + i + 1,
+							block.start_line + last_3_start + i,
 							line
 						);
 					}
@@ -753,7 +753,7 @@ pub fn format_code_search_results_as_text(blocks: &[CodeBlock], detail_level: &s
 
 	for (idx, block) in blocks.iter().enumerate() {
 		output.push_str(&format!("{}. {}\n", idx + 1, block.path));
-		// output.push_str(&format!("{}-{}", block.start_line, block.end_line));
+		output.push_str(&format!("Lines: {}-{}", block.start_line, block.end_line));
 
 		if let Some(distance) = block.distance {
 			output.push_str(&format!(" | Similarity {:.3}", 1.0 - distance));
@@ -833,7 +833,7 @@ pub fn format_text_search_results_as_text(
 
 	for (idx, block) in blocks.iter().enumerate() {
 		output.push_str(&format!("{}. {}\n", idx + 1, block.path));
-		// output.push_str(&format!("{}-{}", block.start_line, block.end_line));
+		output.push_str(&format!("Lines: {}-{}", block.start_line, block.end_line));
 
 		if let Some(distance) = block.distance {
 			output.push_str(&format!(" | Similarity {:.3}", 1.0 - distance));
@@ -2105,6 +2105,7 @@ pub async fn generate_batch_embeddings_for_queries(
 
 pub async fn execute_single_search_with_embeddings(
 	store: &Store,
+	query: &str,
 	embeddings: crate::embedding::SearchModeEmbeddings,
 	mode: &str,
 	per_query_limit: usize,
@@ -2123,7 +2124,8 @@ pub async fn execute_single_search_with_embeddings(
 		"code" => {
 			if let Some(code_emb) = embeddings.code_embeddings {
 				code_blocks = store
-					.get_code_blocks_with_language_filter(
+					.hybrid_search_code_blocks(
+						query,
 						code_emb,
 						Some(per_query_limit),
 						Some(distance_threshold),
@@ -2135,7 +2137,8 @@ pub async fn execute_single_search_with_embeddings(
 		"docs" => {
 			if let Some(text_emb) = embeddings.text_embeddings {
 				doc_blocks = store
-					.get_document_blocks_with_config(
+					.hybrid_search_document_blocks(
+						query,
 						text_emb,
 						Some(per_query_limit),
 						Some(distance_threshold),
@@ -2146,7 +2149,8 @@ pub async fn execute_single_search_with_embeddings(
 		"text" => {
 			if let Some(text_emb) = embeddings.text_embeddings {
 				text_blocks = store
-					.get_text_blocks_with_config(
+					.hybrid_search_text_blocks(
+						query,
 						text_emb,
 						Some(per_query_limit),
 						Some(distance_threshold),
@@ -2159,7 +2163,8 @@ pub async fn execute_single_search_with_embeddings(
 
 			if let Some(code_emb) = embeddings.code_embeddings {
 				code_blocks = store
-					.get_code_blocks_with_language_filter(
+					.hybrid_search_code_blocks(
+						query,
 						code_emb,
 						Some(results_per_type),
 						Some(distance_threshold),
@@ -2172,12 +2177,14 @@ pub async fn execute_single_search_with_embeddings(
 				let text_emb_clone = text_emb.clone();
 
 				let (text_result, doc_result) = tokio::try_join!(
-					store.get_text_blocks_with_config(
+					store.hybrid_search_text_blocks(
+						query,
 						text_emb,
 						Some(results_per_type),
 						Some(distance_threshold),
 					),
-					store.get_document_blocks_with_config(
+					store.hybrid_search_document_blocks(
+						query,
 						text_emb_clone,
 						Some(results_per_type),
 						Some(distance_threshold),
@@ -2212,9 +2219,10 @@ pub async fn execute_parallel_searches(
 	let search_futures: Vec<_> = query_embeddings
 		.into_iter()
 		.enumerate()
-		.map(|(index, (_, embeddings))| async move {
+		.map(|(index, (query, embeddings))| async move {
 			execute_single_search_with_embeddings(
 				store,
+				&query,
 				embeddings,
 				mode,
 				per_query_limit,
@@ -2423,4 +2431,50 @@ pub fn deduplicate_and_merge_results(
 	});
 
 	(final_code_blocks, final_doc_blocks, final_text_blocks)
+}
+
+// Render code blocks in compact format (minimal output for narrow terminals)
+pub fn render_code_blocks_compact(blocks: &[CodeBlock]) {
+	if blocks.is_empty() {
+		println!("No results found.");
+		return;
+	}
+
+	println!("{} results\n", blocks.len());
+
+	for (idx, block) in blocks.iter().enumerate() {
+		// Line 1: [rank] path:lines | language | similarity
+		let location = format!("{}:{}-{}", block.path, block.start_line, block.end_line);
+		let similarity = block
+			.distance
+			.map(|d| {
+				let sim = (1.0 - d) * 100.0;
+				format!("{:.1}%", sim)
+			})
+			.unwrap_or_else(|| "N/A".to_string());
+
+		println!("[{}] {} | {} | {}", idx + 1, location, block.language, similarity);
+
+		// Line 2: symbols (if any)
+		if !block.symbols.is_empty() {
+			let mut display_symbols = block.symbols.clone();
+			display_symbols.sort();
+			display_symbols.dedup();
+			let symbols: Vec<String> = display_symbols.iter().take(5).cloned().collect();
+			println!("    {}", symbols.join(", "));
+		}
+
+		// Line 3: first line of content
+		if let Some(first_line) = block.content.lines().next() {
+			let first_line = first_line.trim();
+			let preview_len = 80usize;
+			let mut preview: String = first_line.chars().take(preview_len).collect();
+			if first_line.chars().count() > preview_len {
+				preview.push('…');
+			}
+			println!("    {}", preview);
+		}
+
+		println!(); // Empty line between results
+	}
 }

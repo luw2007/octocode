@@ -6,7 +6,7 @@ use clap::ValueEnum;
 /// Output format for command results
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum OutputFormat {
-	/// CLI format (default) - human-readable terminal output
+	/// CLI format - human-readable terminal output with borders
 	#[default]
 	Cli,
 	/// JSON format - structured data output
@@ -15,6 +15,8 @@ pub enum OutputFormat {
 	Md,
 	/// Text format - token-efficient plain text output
 	Text,
+	/// Compact format - minimal output for quick viewing
+	Compact,
 }
 
 impl OutputFormat {
@@ -36,5 +38,10 @@ impl OutputFormat {
 	/// Check if this is CLI format
 	pub fn is_cli(&self) -> bool {
 		matches!(self, OutputFormat::Cli)
+	}
+
+	/// Check if this is Compact format
+	pub fn is_compact(&self) -> bool {
+		matches!(self, OutputFormat::Compact)
 	}
 }
